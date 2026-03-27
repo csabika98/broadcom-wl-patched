@@ -131,7 +131,7 @@ struct wl_cfg80211_bss_info {
 	u16 channel;
 	s16 rssi;
 	u16 frame_len;
-	u8 frame_buf[1];
+	u8 frame_buf[];
 };
 
 struct wl_cfg80211_scan_req {

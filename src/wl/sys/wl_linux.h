@@ -107,7 +107,7 @@ struct wl_info {
 	uint		monitor_type;	
 	bool		resched;	
 	uint32		pci_psstate[16];	
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 14)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 14) && LINUX_VERSION_CODE < KERNEL_VERSION(6, 0, 0)
 #define NUM_GROUP_KEYS 4
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 29)
 	struct lib80211_crypto_ops *tkipmodops;
@@ -116,7 +116,7 @@ struct wl_info {
 #endif
 	struct ieee80211_tkip_data  *tkip_ucast_data;
 	struct ieee80211_tkip_data  *tkip_bcast_data[NUM_GROUP_KEYS];
-#endif 
+#endif
 
 	bool		txq_dispatched;	
 	spinlock_t	txq_lock;	

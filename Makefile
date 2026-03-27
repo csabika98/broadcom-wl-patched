@@ -18,24 +18,44 @@
 #
 # $Id: Makefile_kbuild_portsrc 580354 2015-08-18 23:42:37Z $
 
+API_ETC_FILE := /etc/akmods/akmod-wl/api
+
 ifneq ($(KERNELRELEASE),)
 
+  VERSION := $(shell echo $(KERNELRELEASE) | sed -e 's/\([0-9]*\)[.]\([0-9]*\)\(.*\)/\1/')
+  PATCHLEVEL := $(shell echo $(KERNELRELEASE) | sed -e 's/\([0-9]*\)[.]\([0-9]*\)\(.*\)/\2/')
+  SUBLEVEL := $(shell echo $(KERNELRELEASE) | sed -e 's/\([0-9]*\)[.]\([0-9]*\)[.]\([0-9]*\)\(.*\)/\3/; s/\([0-9]*\)[.]\([0-9]*\)\(.*\)/0/')
+
+  # >= 2.6.32
   LINUXVER_GOODFOR_CFG80211:=$(strip $(shell \
-    if [ "$(VERSION)" -ge "2" -a "$(PATCHLEVEL)" -ge "6" -a "$(SUBLEVEL)" -ge "32" -o "$(VERSION)" -ge "3" ]; then \
+    if [ "$(VERSION).$(PATCHLEVEL)" = "2.6" -a "$(SUBLEVEL)" -ge "32" ] || [ "$(VERSION)" -eq "2" -a "$(PATCHLEVEL)" -ge "7" ] || [ "$(VERSION)" -ge "3" ]; then \
       echo TRUE; \
     else \
       echo FALSE; \
     fi \
   ))
 
+  # < 2.6.17
     LINUXVER_WEXT_ONLY:=$(strip $(shell \
-    if [ "$(VERSION)" -ge "2" -a "$(PATCHLEVEL)" -ge "6" -a "$(SUBLEVEL)" -ge "17" ]; then \
+    if [ "$(VERSION).$(PATCHLEVEL)" = "2.6" -a "$(SUBLEVEL)" -ge "17" ] || [ "$(VERSION)" -eq "2" -a "$(PATCHLEVEL)" -ge "7" ] || [ "$(VERSION)" -ge "3" ]; then \
       echo FALSE; \
     else \
       echo TRUE; \
     fi \
   ))
 
+  API_FILE:=$(strip $(shell \
+    if [ -r "$(API_ETC_FILE)" ]; then \
+      echo TRUE; \
+    else \
+      echo FALSE; \
+    fi \
+  ))
+
+  ifeq ($(API_FILE), TRUE)
+    include $(API_ETC_FILE)
+  endif
+  
   ifneq ($(API),)
     ifeq ($(API), CFG80211)
       APICHOICE := FORCE_CFG80211
@@ -117,15 +137,15 @@ GCCVERSION := $(subst $(space),$(empty),$(GCCVERSION))
 GCCVERSION := $(shell expr `echo $(GCCVERSION)` | cut -b1-3)
 GE_49 := $(shell expr `echo $(GCCVERSION)` \>= 490)
 
-EXTRA_CFLAGS :=
+ccflags-y :=
 
 ifeq ($(APIFINAL),CFG80211)
-  EXTRA_CFLAGS += -DUSE_CFG80211
+  ccflags-y += -DUSE_CFG80211
   $(info Using CFG80211 API)
 endif
 
 ifeq ($(APIFINAL),WEXT)
-  EXTRA_CFLAGS += -DUSE_IW
+  ccflags-y += -DUSE_IW
   $(info Using Wireless Extension API)
 endif
 
@@ -137,17 +157,38 @@ wl-objs            += src/wl/sys/wl_linux.o
 wl-objs            += src/wl/sys/wl_iw.o
 wl-objs            += src/wl/sys/wl_cfg80211_hybrid.o
 
-EXTRA_CFLAGS       += -I$(src)/src/include -I$(src)/src/common/include
-EXTRA_CFLAGS       += -I$(src)/src/wl/sys -I$(src)/src/wl/phy -I$(src)/src/wl/ppr/include
-EXTRA_CFLAGS       += -I$(src)/src/shared/bcmwifi/include
-#EXTRA_CFLAGS       += -DBCMDBG_ASSERT -DBCMDBG_ERR
+ccflags-y       += -I$(src)/src/include -I$(src)/src/common/include
+ccflags-y       += -I$(src)/src/wl/sys -I$(src)/src/wl/phy -I$(src)/src/wl/ppr/include
+ccflags-y       += -I$(src)/src/shared/bcmwifi/include
+#ccflags-y       += -DBCMDBG_ASSERT -DBCMDBG_ERR
 ifeq "$(GE_49)" "1"
-EXTRA_CFLAGS       += -Wno-date-time
+ccflags-y       += -Wno-date-time
 endif
 
-EXTRA_LDFLAGS      := $(src)/lib/wlc_hybrid.o_shipped
+$(info [DEBUG] src = $(src))
+$(info [DEBUG] ccflags-y = $(ccflags-y))
 
-KBASE              ?= /lib/modules/`uname -r`
+# Look for kernel architecture.
+# Check for a config symbol that should always be defined, so we don't
+# fail on 'make clean' which doesn't include .config
+ifeq ($(CONFIG_NET),y)
+    ifeq ($(CONFIG_X86_32),y)
+        SHIPPED=wlc_hybrid.o_i386
+        $(info Kernel architecture is X86_32)
+    else
+        ifeq ($(CONFIG_X86_64),y)
+            SHIPPED=wlc_hybrid.o_amd64
+            $(info Kernel architecture is X86_64)
+        else # Error!
+            $(error Unsupported kernel architecture)
+        endif
+    endif
+endif
+
+ldflags-y      := $(src)/lib/$(SHIPPED)
+
+KVER               ?= $(shell uname -r)
+KBASE              ?= /lib/modules/$(KVER)
 KBUILD_DIR         ?= $(KBASE)/build
 MDEST_DIR          ?= $(KBASE)/kernel/drivers/net/wireless
 

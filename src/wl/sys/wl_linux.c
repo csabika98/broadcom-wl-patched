@@ -56,7 +56,11 @@
 #include <asm/irq.h>
 #include <asm/pgtable.h>
 #include <asm/uaccess.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
 #include <linux/unaligned.h>
+#else
+#include <asm/unaligned.h>
+#endif
 
 #include <proto/802.1d.h>
 
@@ -213,6 +217,7 @@ module_param(macaddr, charp, S_IRUGO);
 
 static int nompc = 0;
 module_param(nompc, int, 0);
+MODULE_LICENSE("Mixed/Proprietary");
 
 #ifdef quote_str
 #undef quote_str
@@ -588,14 +593,17 @@ wl_attach(uint16 vendor, uint16 device, ulong regs,
 	}
 	wl->bcm_bustype = bustype;
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 6, 0)
-	if ((wl->regsva = ioremap_nocache(dev->base_addr, PCI_BAR0_WINSZ)) == NULL) {
-#else
+	#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
 	if ((wl->regsva = ioremap(dev->base_addr, PCI_BAR0_WINSZ)) == NULL) {
-#endif
 		WL_ERROR(("wl%d: ioremap() failed\n", unit));
 		goto fail;
 	}
+	#else
+	if ((wl->regsva = ioremap_nocache(dev->base_addr, PCI_BAR0_WINSZ)) == NULL) {
+		WL_ERROR(("wl%d: ioremap() failed\n", unit));
+		goto fail;
+	}
+	#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0) */
 
 	wl->bar1_addr = bar1_addr;
 	wl->bar1_size = bar1_size;
@@ -625,6 +633,10 @@ wl_attach(uint16 vendor, uint16 device, ulong regs,
 
 	wlc_iovar_setint(wl->wlc, "scan_passive_time", 170);
 
+	/* NOTICE: The driver's `qtxpower` option takes values from 0 to
+	 * 127, which correspond to (dBm * 4). This seems to be a half-done
+	 * implementation of their own API. The brcmfmac kernel driver
+	 * confirms this. */
 	wlc_iovar_setint(wl->wlc, "qtxpower", 23 * 4);
 
 #ifdef BCMDBG
@@ -643,7 +655,7 @@ wl_attach(uint16 vendor, uint16 device, ulong regs,
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 17, 0)
 	bcopy(&wl->pub->cur_etheraddr, dev->dev_addr, ETHER_ADDR_LEN);
 #else
-	dev_addr_mod(dev, 0, &wl->pub->cur_etheraddr, ETHER_ADDR_LEN);
+	eth_hw_addr_set(dev, wl->pub->cur_etheraddr.octet);
 #endif
 
 	online_cpus = 1;
@@ -785,15 +797,18 @@ wl_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	pci_read_config_dword(pdev, 0x40, &val);
 	if ((val & 0x0000ff00) != 0)
 		pci_write_config_dword(pdev, 0x40, val & 0xffff00ff);
+
 	bar1_size = pci_resource_len(pdev, 2);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 6, 0)
-	bar1_addr = (uchar *)ioremap_nocache(pci_resource_start(pdev, 2),
-#else
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
 	bar1_addr = (uchar *)ioremap(pci_resource_start(pdev, 2),
-#endif
-		bar1_size);
+				     bar1_size);
+#else
+	bar1_addr = (uchar *)ioremap_nocache(pci_resource_start(pdev, 2),
+					     bar1_size);
+#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0) */
+
 	wl = wl_attach(pdev->vendor, pdev->device, pci_resource_start(pdev, 0), PCI_BUS, pdev,
-		pdev->irq, bar1_addr, bar1_size);
+		       pdev->irq, bar1_addr, bar1_size);
 
 	if (!wl)
 		return -ENODEV;
@@ -1489,7 +1504,6 @@ wl_down(wl_info_t *wl)
 		int i = 0;
 		for (i = 0; (atomic_read(&wl->callbacks) > callbacks) && i < 10000; i++) {
 			schedule();
-			flush_scheduled_work();
 		}
 	}
 	else
@@ -1661,18 +1675,7 @@ wl_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 		goto done2;
 	}
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)
-	if (segment_eq(get_fs(), KERNEL_DS))
-#else
-	if (uaccess_kernel())
-#endif
-		buf = ioc.buf;
-
-	else if (ioc.buf) {
-#else
 	if (ioc.buf) {
-#endif
 		if (!(buf = (void *) MALLOC(wl->osh, MAX(ioc.len, WLC_IOCTL_MAXLEN)))) {
 			bcmerror = BCME_NORESOURCE;
 			goto done2;
@@ -1689,11 +1692,7 @@ wl_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 	WL_UNLOCK(wl);
 
 done1:
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
-	if (ioc.buf && (ioc.buf != buf)) {
-#else
 	if (ioc.buf) {
-#endif
 		if (copy_to_user(ioc.buf, buf, ioc.len))
 			bcmerror = BCME_BADADDR;
 		MFREE(wl->osh, buf, MAX(ioc.len, WLC_IOCTL_MAXLEN));
@@ -1859,19 +1858,21 @@ wl_set_mac_address(struct net_device *dev, void *addr)
 	WL_TRACE(("wl%d: wl_set_mac_address\n", wl->pub->unit));
 
 	WL_LOCK(wl);
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 17, 0)
-	bcopy(sa->sa_data, dev->dev_addr, ETHER_ADDR_LEN);
-#else
-	dev_addr_mod(dev, 0, sa->sa_data, ETHER_ADDR_LEN);
-#endif
 	err = wlc_iovar_op(wl->wlc, "cur_etheraddr", NULL, 0, sa->sa_data, ETHER_ADDR_LEN,
 		IOV_SET, (WL_DEV_IF(dev))->wlcif);
 	WL_UNLOCK(wl);
-	if (err)
+	if (err) {
 		WL_ERROR(("wl%d: wl_set_mac_address: error setting MAC addr override\n",
 			wl->pub->unit));
-	return err;
+		return OSL_ERROR(err);
+	} else {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 17, 0)
+		bcopy(sa->sa_data, dev->dev_addr, ETHER_ADDR_LEN);
+#else
+        eth_hw_addr_set(dev, sa->sa_data);
+#endif
+		return 0;
+	}
 }
 
 static void
@@ -2369,7 +2370,7 @@ wl_timer(
 ) {
 	wl_timer_t *t =
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 15, 0)
-		from_timer(t, tl, timer);
+		timer_container_of(t, tl, timer);
 #else
 		(wl_timer_t *)data;
 #endif
@@ -2474,7 +2475,7 @@ wl_del_timer(wl_info_t *wl, wl_timer_t *t)
 	ASSERT(t);
 	if (t->set) {
 		t->set = FALSE;
-		if (!del_timer(&t->timer)) {
+		if (!timer_delete(&t->timer)) {
 #ifdef BCMDBG
 			WL_INFORM(("wl%d: Failed to delete timer %s\n", wl->unit, t->name));
 #endif
@@ -3033,14 +3034,7 @@ _wl_add_monitor_if(wl_task_t *task)
 	}
 
 	ASSERT(strlen(wlif->name) > 0);
-#if __GNUC__ < 8
 	strncpy(wlif->dev->name, wlif->name, strlen(wlif->name));
-#else
-	// Should have been:
-	// strncpy(wlif->dev->name, wlif->name, sizeof(wlif->dev->name) - 1);
-	// wlif->dev->name[sizeof(wlif->dev->name) - 1] = '\0';
-	memcpy(wlif->dev->name, wlif->name, strlen(wlif->name));
-#endif
 
 	wl->monitor_dev = dev;
 	if (wl->monitor_type == 1)
@@ -3051,7 +3045,7 @@ _wl_add_monitor_if(wl_task_t *task)
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 17, 0)
 	bcopy(wl->dev->dev_addr, dev->dev_addr, ETHER_ADDR_LEN);
 #else
-	dev_addr_mod(dev, 0, wl->dev->dev_addr, ETHER_ADDR_LEN);
+	eth_hw_addr_set(dev, wl->dev->dev_addr);
 #endif
 
 #if defined(WL_USE_NETDEV_OPS)
@@ -3333,7 +3327,7 @@ wl_proc_read(char *buffer, char **start, off_t offset, int length, int *eof, voi
 static ssize_t
 wl_proc_read(struct file *filp, char __user *buffer, size_t length, loff_t *offp)
 {
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 17, 0))
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 17, 0)
 	wl_info_t * wl = PDE_DATA(file_inode(filp));
 #else
 	wl_info_t * wl = pde_data(file_inode(filp));
@@ -3394,7 +3388,7 @@ wl_proc_write(struct file *filp, const char *buff, unsigned long length, void *d
 static ssize_t
 wl_proc_write(struct file *filp, const char __user *buff, size_t length, loff_t *offp)
 {
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 17, 0))
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 17, 0)
 	wl_info_t * wl = PDE_DATA(file_inode(filp));
 #else
 	wl_info_t * wl = pde_data(file_inode(filp));
@@ -3432,18 +3426,19 @@ wl_proc_write(struct file *filp, const char __user *buff, size_t length, loff_t 
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0)
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 6, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
+static const struct proc_ops wl_fops = {
+	.proc_read	= wl_proc_read,
+	.proc_write	= wl_proc_write,
+};
+#else
 static const struct file_operations wl_fops = {
 	.owner	= THIS_MODULE,
 	.read	= wl_proc_read,
 	.write	= wl_proc_write,
-#else
-static const struct proc_ops wl_fops = {
-	.proc_read	= wl_proc_read,
-	.proc_write	= wl_proc_write,
-#endif
 };
-#endif
+#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0) */
+#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0) */
 
 static int
 wl_reg_proc_entry(wl_info_t *wl)

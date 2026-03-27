@@ -278,7 +278,7 @@ typedef struct channel_info {
 
 struct maclist {
 	uint count;			
-	struct ether_addr ea[1];	
+	struct ether_addr ea[];	
 };
 
 typedef struct wl_ioctl {
